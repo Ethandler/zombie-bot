@@ -1,100 +1,160 @@
 #!/usr/bin/env python3
-import cv2
-import numpy as np
-import pyautogui
+# -*- coding: utf-8 -*-
+import sys
 import time
+import math
 import random
-from mss import mss
+import logging
+from collections import deque
 
-# --- Global Game State ---
-ammo = 10
-max_ammo = 10
-health = 100
-kills = 0
+try:
+    import cv2
+    import numpy as np
+    import keyboard
+    import mouse
+    from mss import mss
+    import torch
+    import torch.nn as nn
+    import torch.optim as optim
+except ImportError as e:
+    print(f"Missing package: {e.name}. Install with: pip install opencv-python numpy keyboard mouse mss torch")
+    sys.exit(1)
 
-# --- Adaptive Settings ---
-learn_params = {
-    'reaction_time': 0.06,
-    'detection_threshold': 0.85,
-    'aim_adjustment': 50,
-    'headshot_priority': True
-}
+logging.basicConfig(filename="zombie_ai.log", level=logging.INFO, format="%(asctime)s - %(message)s")
 
-# --- Load Templates ---
-zombie_template = cv2.imread('templates/zombie.png', 0)
-headshot_template = cv2.imread('templates/head.png', 0)
+class NeuralNet(nn.Module):
+    def __init__(self):
+        super(NeuralNet, self).__init__()
+        self.fc = nn.Sequential(
+            nn.Linear(10, 256),
+            nn.ReLU(),
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.Linear(128, 3)
+        )
+    
+    def forward(self, x):
+        return self.fc(x)
 
-def capture_screen():
-    with mss() as sct:
-        sct_img = sct.grab(sct.monitors[0])
-        img = np.array(sct_img)
+class AIReasoner:
+    def __init__(self):
+        self.knowledge_base = []
+    
+    def analyze_logs(self):
+        try:
+            with open("zombie_ai.log", "r") as f:
+                logs = f.readlines()
+                self.knowledge_base = logs[-20:]  # Store last 20 logs for analysis
+        except FileNotFoundError:
+            pass
+    
+    def make_decision(self):
+        self.analyze_logs()
+        if "low ammo" in str(self.knowledge_base):
+            return "reload"
+        elif "threat detected" in str(self.knowledge_base):
+            return "shoot"
+        return "move"
+
+class ZombieAI:
+    def __init__(self):
+        self.sct = mss()
+        self.model = NeuralNet()
+        self.optimizer = optim.Adam(self.model.parameters(), lr=0.001)
+        self.memory = deque(maxlen=50000)
+        self.reasoner = AIReasoner()
+        self.config = {
+            "screen_region": {"top": 0, "left": 0, "width": 1920, "height": 1080},
+            "reaction_time": 0.006,
+            "movement_speed": 0.14,
+            "ballistics": {
+                "mouse_sensitivity": 4.2,
+                "smooth_steps": 90,
+                "burst_delay": 0.012,
+            },
+            "safety": {
+                "health_threshold": 35,
+                "min_ammo": 4,
+                "reload_time": 0.35
+            }
+        }
+        self.last_reload = time.time()
+        self.current_target = None
+
+    def capture_screen(self):
+        img = np.array(self.sct.grab(self.config["screen_region"]))
         return cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-def match_template(screen_img, template):
-    if template is None:
-        return []
-    result = cv2.matchTemplate(screen_img, template, cv2.TM_CCOEFF_NORMED)
-    return list(zip(*np.where(result >= learn_params['detection_threshold'])[::-1]))
+    def detect_zombies(self, frame):
+        _, thresh = cv2.threshold(frame, 100, 255, cv2.THRESH_BINARY)
+        contours, _ = cv2.findContours(thresh, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+        return [cv2.boundingRect(c) for c in contours if cv2.contourArea(c) > 400]
 
-def detect_zombies(screen_img):
-    zombies = match_template(screen_img, zombie_template)
-    headshots = match_template(screen_img, headshot_template)
-    return {'zombies': zombies, 'headshots': headshots}
+    def select_target(self, threats):
+        if not threats:
+            return None
+        screen_center = (self.config["screen_region"]["width"]//2, self.config["screen_region"]["height"]//2)
+        return min(threats, key=lambda t: math.dist(t[:2], screen_center))
 
-def decide_action(detections):
-    global ammo, kills
-    actions = []
-    if detections['zombies']:
-        target = detections['headshots'][0] if detections['headshots'] and learn_params['headshot_priority'] else detections['zombies'][0]
-        if ammo > 0:
-            actions.append(('aim', target))
-            actions.append(('shoot', target))
-            ammo -= 1
-            kills += 1
-        else:
-            actions.append(('reload', None))
-        actions.append(('move_left', None) if random.random() > 0.5 else ('move_right', None))
-    else:
-        actions.append(('look_around', None))
-        actions.append((random.choice(['move_forward', 'move_backward']), None))
-    if ammo < 3:
-        actions.append(('reload', None))
-    return actions
+    def aim_and_shoot(self, target):
+        if target:
+            self._aim(target)
+            if self.crosshair_is_red():
+                self._shoot()
 
-def perform_action(action):
-    action_type, pos = action
-    rt = learn_params['reaction_time']
-    if action_type == 'shoot':
-        pyautogui.click()
-    elif action_type == 'aim':
-        pyautogui.moveTo(pos[0], pos[1], duration=rt)
-    elif action_type == 'reload':
-        pyautogui.press('r')
-        global ammo
-        ammo = max_ammo
-    elif action_type == 'look_around':
-        pyautogui.moveRel(random.randint(-100, 100), random.randint(-100, 100), duration=rt)
-    else:
-        pyautogui.keyDown(action_type[5:])
-        time.sleep(rt)
-        pyautogui.keyUp(action_type[5:])
+    def _aim(self, target):
+        target_x, target_y = target[:2]
+        screen_x, screen_y = mouse.get_position()
+        dx, dy = (target_x - screen_x) / self.config["ballistics"]["smooth_steps"], (target_y - screen_y) / self.config["ballistics"]["smooth_steps"]
+        for _ in range(self.config["ballistics"]["smooth_steps"]):
+            mouse.move(screen_x + dx, screen_y + dy)
+            time.sleep(0.0003)
 
-def main():
-    print("Starting Zombie Bot...")
-    while True:
-        screen_img = capture_screen()
-        detections = detect_zombies(screen_img)
-        actions = decide_action(detections)
-        for action in actions:
-            perform_action(action)
-        print(f"Ammo: {ammo}, Health: {health}, Kills: {kills}, Actions: {actions}")
-        time.sleep(learn_params['reaction_time'])
+    def _shoot(self):
+        mouse.press()
+        time.sleep(self.config["ballistics"]["burst_delay"])
+        mouse.release()
 
-if __name__ == "__main__":
-    main()
+    def crosshair_is_red(self):
+        return random.choice([True, False])  # Placeholder logic for detecting red crosshair
+
+    def move_tactically(self):
+        actions = ["w", "a", "s", "d", "ctrl", "shift"]  # Forward, left, back, right, crouch, sprint
+        action = random.choice(actions)
+        keyboard.press(action)
+        time.sleep(self.config["movement_speed"])
+        keyboard.release(action)
+
+    def reload_weapon(self):
+        keyboard.press("r")
+        time.sleep(self.config["safety"]["reload_time"])
+        keyboard.release("r")
+
+    def update_ai(self):
+        self.config["reaction_time"] = max(0.002, self.config["reaction_time"] * 0.93)
+        self.config["ballistics"]["smooth_steps"] = min(110, self.config["ballistics"]["smooth_steps"] + 1)
+        logging.info(f"Updated AI Config: {self.config}")
+
+    def run(self):
+        print("Elite AI Combat System Activated - Press Ctrl+C to Exit")
+        time.sleep(3)
+        try:
+            while True:
+                decision = self.reasoner.make_decision()
+                if decision == "reload":
+                    self.reload_weapon()
+                elif decision == "shoot" and self.current_target:
+                    self.aim_and_shoot(self.current_target)
+                else:
+                    self.move_tactically()
+                
+                frame = self.capture_screen()
+                threats = self.detect_zombies(frame)
+                self.current_target = self.select_target(threats)
+                self.update_ai()
+                time.sleep(self.config["reaction_time"])
 
 
-
-
+    
 
 
