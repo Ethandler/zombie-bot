@@ -1,6 +1,5 @@
 import sys
 import time
-import math
 import random
 import logging
 from collections import deque
@@ -18,9 +17,9 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 # ------------------------------------------------------------------
 # Offline Mistral 7B Configuration
-MODEL_PATH = "path/to/local/mistral-7b"
-tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
-model = AutoModelForCausalLM.from_pretrained(MODEL_PATH)
+MODEL_PATH = "C:/Users/Ethan/Documents/Models/mistral-7b"
+tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH, local_files_only=True)
+model = AutoModelForCausalLM.from_pretrained(MODEL_PATH, local_files_only=True)
 
 def query_mistral(prompt):
     inputs = tokenizer(prompt, return_tensors="pt")
@@ -70,9 +69,10 @@ class ZombieAI:
     
     def execute_action(self, action):
         if action == "move":
-            keyboard.press(random.choice(["w", "a", "s", "d"]))
+            direction = random.choice(["w", "a", "s", "d"])
+            keyboard.press(direction)
             time.sleep(0.2)
-            keyboard.release(random.choice(["w", "a", "s", "d"]))
+            keyboard.release(direction)
         elif action == "shoot" and self.points_manager.spend(50):
             mouse.press()
             time.sleep(0.1)
