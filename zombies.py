@@ -6,19 +6,15 @@ import math
 import random
 import logging
 from collections import deque
+import cv2
+import numpy as np
+import keyboard
+import mouse
+from mss import mss
+import torch
+import torch.nn as nn
+import torch.optim as optim
 
-try:
-    import cv2
-    import numpy as np
-    import keyboard
-    import mouse
-    from mss import mss
-    import torch
-    import torch.nn as nn
-    import torch.optim as optim
-except ImportError as e:
-    print(f"Missing package: {e.name}. Install with: pip install opencv-python numpy keyboard mouse mss torch")
-    sys.exit(1)
 
 logging.basicConfig(filename="zombie_ai.log", level=logging.INFO, format="%(asctime)s - %(message)s")
 
@@ -153,8 +149,11 @@ class ZombieAI:
                 self.current_target = self.select_target(threats)
                 self.update_ai()
                 time.sleep(self.config["reaction_time"])
+        except Exception as e:
+            logging.error(f"Error encountered: {e}")
+        except KeyboardInterrupt:
+            print("\nAI Combat System Deactivated")
 
-
-    
-
-
+if __name__ == "__main__":
+    bot = ZombieAI()
+    bot.run()
